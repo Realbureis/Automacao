@@ -1,72 +1,39 @@
 import streamlit as st
-from ultralytics import YOLO
-from PIL import Image, ImageOps
-from pyzbar.pyzbar import decode
 import requests
+from pyzbar.pyzbar import decode
+from PIL import Image
 
-# Configuração de interface para Mobile
-st.set_page_config(page_title="Jumbo CDP Scanner", layout="centered")
+# URL do seu Google Script
+WEBAPP_URL = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
 
-# Estilo para remover menus desnecessários do Streamlit
-st.markdown("""
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    </style>
-    """, unsafe_allow_html=True)
+st.title("Scanner Logístico Jumbo CDP")
 
-# 1. Carregamento do Modelo com Cache
-@st.cache_resource
-def load_model():
-    return YOLO('best.pt')
+# Slot para a segunda imagem (Código de Barras)
+img_file = st.camera_input("Escaneie o Código de Barras")
 
-model = load_model()
-
-# 2. URL DO GOOGLE (Substitua pela sua URL entre as aspas)
-URL_GOOGLE_SHEETS = "SUA_URL_DO_GOOGLE_AQUI"
-
-st.title("📦 Scanner Industrial Jumbo")
-st.write("Aponte para o pedido e aguarde a leitura automática.")
-
-# Componente de Câmera (Nativo do Streamlit)
-foto = st.camera_input("Scanner de Pedidos")
-
-# Trava de segurança para espelhamento
-inverter = st.checkbox("A imagem está invertida? (Inverter)", value=False)
-
-if foto:
-    img = Image.open(foto)
+if img_file:
+    # Processar a imagem
+    image = Image.open(img_file)
+    barcodes = decode(image)
     
-    # Se o operador marcar, o Python desvira o pixel
-    if inverter:
-        img = ImageOps.mirror(img)
-    
-    with st.spinner('Validando pedido com IA...'):
-        # --- Lógica de Leitura ---
-        barcodes = decode(img)
-        rastreio = barcodes[0].data.decode('utf-8') if barcodes else "Não detectado"
+    if barcodes:
+        codigo_lido = barcodes[0].data.decode('utf-8')
+        st.success(f"Código detectado: {codigo_lido}")
         
-        # --- Detecção YOLO ---
-        results = model(img)
-        res_img = results[0].plot()
-        
-        # --- Envio para Planilha ---
-        if rastreio != "Não detectado" and "http" in URL_GOOGLE_SHEETS:
+        # Botão para enviar para a planilha
+        if st.button("Enviar para Planilha"):
+            payload = {"codigo": codigo_lido, "timestamp": "now"}
+            
             try:
-                payload = {
-                    "rastreio": rastreio, 
-                    "campos": "Conferido", 
-                    "origem": "Streamlit Mobile"
-                }
-                requests.post(URL_GOOGLE_SHEETS, json=payload, timeout=5)
-                st.success(f"✅ Pedido {rastreio} enviado!")
-            except:
-                st.warning("⚠️ Lido, mas erro ao enviar para o Google.")
-        else:
-            st.error("❌ Código de barras não detectado.")
-
-        # Exibição do Resultado
-        st.image(res_img, caption="Processamento da IA")
-
-st.caption("Jumbo CDP v1.0 - Estratégia e Logística")
+                # Envia o dado para o seu Google Apps Script
+                response = requests.post(WEBAPP_URL, json=payload)
+                
+                if response.status_code == 200:
+                    st.balloons()
+                    st.success("Dados enviados com sucesso para a nuvem!")
+                else:
+                    st.error(f"Erro no servidor: {response.status_code}")
+            except Exception as e:
+                st.error(f"Erro de conexão: {e}")
+    else:
+        st.warning("Nenhum código de barras encontrado. Tente alinhar melhor a imagem.")
