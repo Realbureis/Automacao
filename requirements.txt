@@ -1,6 +1,6 @@
-streamlit==1.32.0
 ultralytics
+easyocr
 opencv-python-headless
 pyzbar
-Pillow
 requests
+pillow
