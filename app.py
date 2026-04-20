@@ -4,73 +4,110 @@ from ultralytics import YOLO
 from pyzbar.pyzbar import decode
 from PIL import Image
 import os
+import time
 
-# CONFIGURAÇÕES
+# 1. CONFIGURAÇÃO DO ENDPOINT GOOGLE (ATUALIZADO)
 URL_GOOGLE = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
 
-st.set_page_config(page_title="Checkout Jumbo", layout="centered")
+st.set_page_config(page_title="Checkout Jumbo v3", layout="centered")
 
 @st.cache_resource
 def load_model():
     model_path = 'best.pt'
-    # Verifica se o arquivo existe e tem tamanho de um modelo real (> 1MB)
+    # Verifica se o arquivo existe e se não está corrompido (mínimo 1MB)
     if os.path.exists(model_path) and os.path.getsize(model_path) > 1000000:
-        return YOLO(model_path)
+        try:
+            return YOLO(model_path)
+        except Exception as e:
+            st.error(f"Erro ao carregar neurônios da IA: {e}")
+            return None
     return None
 
 model = load_model()
 
-if "ia_ok" not in st.session_state:
-    st.session_state.ia_ok = None
+# Controle de estado para o fluxo de duas fotos
+if "ia_processada" not in st.session_state:
+    st.session_state.ia_processada = None
 
-st.title("🚀 Checkout Logístico - Jumbo")
+st.title("🚀 Sistema de Checkout Jumbo")
+st.info("Fluxo: 1º Folha de Pedido -> 2º Código de Barras")
 
+# Trava visual caso o modelo ainda esteja subindo para o servidor
 if model is None:
-    st.error("⏳ O arquivo 'best.pt' está sendo carregado pelo servidor. Aguarde 30 segundos e atualize a página.")
+    st.warning("⏳ O servidor está processando o modelo 'best.pt'. Aguarde 15 segundos e atualize a página.")
     st.stop()
 
-# --- PASSO 1: IA ---
+# --- PASSO 1: IA ROBOFLOW (FOLHA DE PEDIDO) ---
 st.subheader("1. Escanear Folha de Pedido")
-foto_folha = st.camera_input("Foto da folha", key="c1")
+foto_folha = st.camera_input("Capture a folha", key="scan_folha")
 
 if foto_folha:
     img_f = Image.open(foto_folha)
     results = model(img_f)
+    
+    # Mapeia as classes treinadas (N. Pedido, Nome Detento, etc.)
     labels = [model.names[int(box.cls[0])] for box in results[0].boxes]
     
     if labels:
-        st.session_state.ia_ok = ", ".join(set(labels))
-        st.success(f"✅ IA Detectou: {st.session_state.ia_ok}")
+        st.session_state.ia_processada = ", ".join(set(labels))
+        st.success(f"✅ Campos Detectados: {st.session_state.ia_processada}")
     else:
-        st.warning("IA não reconheceu os campos.")
+        st.session_state.ia_processada = "Nenhum campo detectado"
+        st.warning("⚠️ A IA não reconheceu os campos da folha.")
 
-# --- PASSO 2: BARCODE ---
-if st.session_state.ia_ok:
+# --- PASSO 2: CÓDIGO DE BARRAS (PACOTE) ---
+if st.session_state.ia_processada:
     st.divider()
     st.subheader("2. Escanear Código do Pacote")
-    foto_b = st.camera_input("Foto do código", key="c2")
+    foto_bar = st.camera_input("Capture o código de barras", key="scan_barcode")
 
-    if foto_b:
-        img_b = Image.open(foto_b)
+    if foto_bar:
+        img_b = Image.open(foto_bar)
         barcodes = decode(img_b)
         
         if barcodes:
-            rastreio = barcodes[0].data.decode('utf-8').strip()
-            st.info(f"📦 Código: {rastreio}")
+            codigo_limpo = barcodes[0].data.decode('utf-8').strip()
+            st.info(f"📦 Código Lido: {codigo_limpo}")
             
-            if st.button("FINALIZAR E ENVIAR"):
+            # --- ENVIO FINAL PARA A PLANILHA ---
+            if st.button("CONFIRMAR E ENVIAR DADOS"):
                 payload = {
-                    "rastreio": str(rastreio),
-                    "classes": str(st.session_state.ia_ok),
-                    "origem": "Sistema_HF_Final"
+                    "rastreio": str(codigo_limpo),
+                    "classes": str(st.session_state.ia_processada),
+                    "origem": "Sistema_Producao_Jumbo"
                 }
                 
-                try:
-                    res = requests.post(URL_GOOGLE, json=payload, timeout=15)
-                    if res.status_code == 200:
-                        st.balloons()
-                        st.success("✅ Pedido arquivado na nuvem!")
-                        st.session_state.ia_ok = None
-                        st.rerun()
-                except:
-                    st.error("Erro na conexão.")
+                # Headers necessários para comunicação WebApp Google
+                headers = {"Content-Type": "application/json"}
+                
+                with st.spinner('Gravando na nuvem...'):
+                    try:
+                        # Timeout estendido para redes de galpão
+                        res = requests.post(
+                            URL_GOOGLE, 
+                            json=payload, 
+                            headers=headers,
+                            timeout=30,
+                            allow_redirects=True
+                        )
+                        
+                        # O Google Apps Script pode retornar 200 (OK) ou 302 (Redirecionamento)
+                        if res.status_code in [200, 201, 302]:
+                            st.balloons()
+                            st.success("✅ Sucesso! Pedido arquivado na planilha.")
+                            time.sleep(2)
+                            # Reseta para o próximo operador
+                            st.session_state.ia_processada = None
+                            st.rerun()
+                        else:
+                            st.error(f"Erro no Google Script: Status {res.status_code}")
+                            st.info("Verifique se o script está publicado como 'Anyone'.")
+                    except Exception as e:
+                        st.error(f"Erro de Conexão: {e}")
+        else:
+            st.warning("Centralize o código de barras na câmera.")
+
+# Botão de Reset na Sidebar
+if st.sidebar.button("Limpar e Reiniciar"):
+    st.session_state.ia_processada = None
+    st.rerun()
