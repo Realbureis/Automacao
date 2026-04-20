@@ -3,84 +3,74 @@ import requests
 from ultralytics import YOLO
 from pyzbar.pyzbar import decode
 from PIL import Image
+import os
 
-# 1. CONFIGURAÇÕES
-# Use a sua URL de implantação do Google (sempre a "Nova Versão")
+# CONFIGURAÇÕES
 URL_GOOGLE = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
 
-st.set_page_config(page_title="Checkout Jumbo CDP", layout="centered")
+st.set_page_config(page_title="Checkout Jumbo", layout="centered")
 
 @st.cache_resource
 def load_model():
-    # Carrega o modelo com suas classes (N. Pedido, Nome Comprador, etc)
-    return YOLO('best.pt')
+    model_path = 'best.pt'
+    # Verifica se o arquivo existe e tem tamanho de um modelo real (> 1MB)
+    if os.path.exists(model_path) and os.path.getsize(model_path) > 1000000:
+        return YOLO(model_path)
+    return None
 
 model = load_model()
 
-# Inicializa o estado para não perder a informação entre as fotos
-if "dados_ia" not in st.session_state:
-    st.session_state.dados_ia = None
+if "ia_ok" not in st.session_state:
+    st.session_state.ia_ok = None
 
-st.title("🚀 Sistema de Checkout Jumbo")
-st.write("Conferência automática via IA e Rastreio.")
+st.title("🚀 Checkout Logístico - Jumbo")
 
-# --- PASSO 1: IA (ROBOFLOW) ---
+if model is None:
+    st.error("⏳ O arquivo 'best.pt' está sendo carregado pelo servidor. Aguarde 30 segundos e atualize a página.")
+    st.stop()
+
+# --- PASSO 1: IA ---
 st.subheader("1. Escanear Folha de Pedido")
-foto_folha = st.camera_input("Tire foto da folha", key="cam1")
+foto_folha = st.camera_input("Foto da folha", key="c1")
 
 if foto_folha:
     img_f = Image.open(foto_folha)
     results = model(img_f)
-    
-    # Extrai os nomes das classes que você treinou
     labels = [model.names[int(box.cls[0])] for box in results[0].boxes]
     
     if labels:
-        st.session_state.dados_ia = ", ".join(set(labels))
-        st.success(f"✅ IA Detectou: {st.session_state.dados_ia}")
+        st.session_state.ia_ok = ", ".join(set(labels))
+        st.success(f"✅ IA Detectou: {st.session_state.ia_ok}")
     else:
-        st.session_state.dados_ia = "Nenhum campo detectado"
-        st.warning("⚠️ A IA não reconheceu os campos. Tente focar melhor.")
+        st.warning("IA não reconheceu os campos.")
 
-# --- PASSO 2: CÓDIGO DE BARRAS ---
-if st.session_state.dados_ia:
+# --- PASSO 2: BARCODE ---
+if st.session_state.ia_ok:
     st.divider()
-    st.subheader("2. Escanear Código de Barras")
-    foto_b = st.camera_input("Tire foto do código do pacote", key="cam2")
+    st.subheader("2. Escanear Código do Pacote")
+    foto_b = st.camera_input("Foto do código", key="c2")
 
     if foto_b:
         img_b = Image.open(foto_b)
         barcodes = decode(img_b)
         
         if barcodes:
-            rastreio_lido = barcodes[0].data.decode('utf-8').strip()
-            st.info(f"📦 Código: {rastreio_lido}")
+            rastreio = barcodes[0].data.decode('utf-8').strip()
+            st.info(f"📦 Código: {rastreio}")
             
-            # --- ENVIO FINAL ---
-            # Removido 'variant' para evitar o TypeError do seu print
-            if st.button("CONFIRMAR E ENVIAR PARA NUVEM"):
+            if st.button("FINALIZAR E ENVIAR"):
                 payload = {
-                    "rastreio": str(rastreio_lido),      # Coluna B
-                    "classes": str(st.session_state.dados_ia), # Coluna C
-                    "origem": "Jumbo_Mobile_Final"       # Coluna D
+                    "rastreio": str(rastreio),
+                    "classes": str(st.session_state.ia_ok),
+                    "origem": "Sistema_HF_Final"
                 }
                 
                 try:
-                    res = requests.post(URL_GOOGLE, json=payload, timeout=10)
+                    res = requests.post(URL_GOOGLE, json=payload, timeout=15)
                     if res.status_code == 200:
                         st.balloons()
-                        st.success("✅ Pedido arquivado com sucesso!")
-                        # Limpa o estado e reinicia para o próximo pedido
-                        st.session_state.dados_ia = None
+                        st.success("✅ Pedido arquivado na nuvem!")
+                        st.session_state.ia_ok = None
                         st.rerun()
-                    else:
-                        st.error(f"Erro no servidor Google: {res.status_code}")
-                except Exception as e:
-                    st.error(f"Erro de conexão: {e}")
-        else:
-            st.warning("Aguardando leitura do código de barras...")
-
-# Barra lateral para resetar se algo der errado
-if st.sidebar.button("Reiniciar Processo"):
-    st.session_state.dados_ia = None
-    st.rerun()
+                except:
+                    st.error("Erro na conexão.")
