@@ -3,91 +3,81 @@ import requests
 from ultralytics import YOLO
 from pyzbar.pyzbar import decode
 from PIL import Image
-import time
+import easyocr
+import numpy as np
 
-# URL do seu Google Script
+# Configuração da URL do Google
 URL_GOOGLE = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
 
-st.set_page_config(page_title="Checkout Inteligente Jumbo", layout="centered")
+st.set_page_config(page_title="Jumbo OCR Smart", layout="centered")
 
+# Carrega a IA de localização e o leitor de texto (OCR)
 @st.cache_resource
-def load_model():
-    return YOLO('best.pt')
+def load_tools():
+    model = YOLO('best.pt')
+    reader = easyocr.Reader(['pt']) # Define o idioma para Português
+    return model, reader
 
-model = load_model()
+model, reader = load_tools()
 
-# Inicializa as variáveis no estado da sessão para os campos do formulário
-if "form_dados" not in st.session_state:
-    st.session_state.form_dados = {"pedido": "", "detento": "", "unidade": "", "rastreio": ""}
+if "dados" not in st.session_state:
+    st.session_state.dados = {"comprador": "", "telefone": "", "rastreio": ""}
 
-st.title("🚀 Checkout com Autopreenchimento")
-st.write("A IA detecta os campos e preenche o formulário abaixo.")
+st.title("📦 Checkout Inteligente Jumbo CDP")
 
-# --- PASSO 1: FOTO E DETECÇÃO ---
-st.subheader("1. Escanear Folha de Pedido")
-foto_folha = st.camera_input("Tire foto da folha", key="cam_ia")
+# --- PASSO 1: FOTO E LEITURA AUTOMÁTICA ---
+foto = st.camera_input("Tire foto do pedido")
 
-if foto_folha:
-    img_f = Image.open(foto_folha)
-    results = model.predict(img_f, conf=0.25)
+if foto:
+    img = Image.open(foto)
+    img_array = np.array(img)
     
-    # Preview visual (as caixas coloridas que você pediu)
-    res_plotted = results[0].plot()
-    img_preview = Image.fromarray(res_plotted[:, :, ::-1])
-    st.image(img_preview, caption="Preview da Detecção", use_column_width=True)
+    # 1. Localiza os campos com YOLO
+    results = model.predict(img, conf=0.25)
     
-    # Lógica de preenchimento dos campos baseada nas classes detectadas
-    detectados = [model.names[int(box.cls[0])] for box in results[0].boxes]
-    
-    # Atualiza o formulário se encontrar as classes específicas
-    # Exemplo: se a IA ler a classe 'N. Pedido', marcamos como 'Detectado' no campo
-    if detectados:
-        if "N. Pedido" in detectados: st.session_state.form_dados["pedido"] = "✅ Detectado"
-        if "Nome Detento" in detectados: st.session_state.form_dados["detento"] = "✅ Detectado"
-        if "Unidade Prisional" in detectados: st.session_state.form_dados["unidade"] = "✅ Detectado"
-        st.success("Campos identificados e preenchidos abaixo!")
-    else:
-        st.error("Nenhum campo reconhecido pela IA.")
+    # 2. Varre as caixas detectadas
+    for box in results[0].boxes:
+        coords = box.xyxy[0].tolist() # Pega as coordenadas [x1, y1, x2, y2]
+        classe = model.names[int(box.cls[0])] # Pega o nome da classe
+        
+        # Recorta a imagem na área da caixa
+        crop = img_array[int(coords[1]):int(coords[3]), int(coords[0]):int(coords[2])]
+        
+        # 3. Faz o OCR (Lê o texto dentro do recorte)
+        resultado_ocr = reader.readtext(crop, detail=0)
+        texto_lido = " ".join(resultado_ocr)
+        
+        # 4. Preenche os campos baseados na classe (Ajuste os nomes se forem diferentes)
+        if "Nome Comprador" in classe:
+            st.session_state.dados["comprador"] = texto_lido
+        elif "Telefone" in classe:
+            st.session_state.dados["telefone"] = texto_lido
 
-# --- PASSO 2: FORMULÁRIO DE CONFERÊNCIA ---
-st.divider()
-st.subheader("2. Conferência de Dados")
-
-# Os campos abaixo são preenchidos pela IA, mas você pode editar
-campo_pedido = st.text_input("Número do Pedido", value=st.session_state.form_dados["pedido"])
-campo_detento = st.text_input("Nome do Detento", value=st.session_state.form_dados["detento"])
-campo_unidade = st.text_input("Unidade Prisional", value=st.session_state.form_dados["unidade"])
+# --- PASSO 2: FORMULÁRIO (O texto lido aparece aqui) ---
+st.subheader("Conferência Automática")
+nome_final = st.text_input("Nome do Comprador", value=st.session_state.dados["comprador"])
+tel_final = st.text_input("Telefone", value=st.session_state.dados["telefone"])
 
 # --- PASSO 3: CÓDIGO DE BARRAS ---
-st.subheader("3. Escanear Rastreio")
-foto_bar = st.camera_input("Capture o código do pacote", key="cam_bar")
-
+st.divider()
+foto_bar = st.camera_input("Escanear Rastreio", key="barcode")
 if foto_bar:
     img_b = Image.open(foto_bar)
-    barcodes = decode(img_b)
-    if barcodes:
-        st.session_state.form_dados["rastreio"] = barcodes[0].data.decode('utf-8').strip()
-        st.info(f"📦 Código: {st.session_state.form_dados['rastreio']}")
+    deteccao = decode(img_b)
+    if deteccao:
+        st.session_state.dados["rastreio"] = deteccao[0].data.decode('utf-8')
+        st.success(f"Rastreio Lido: {st.session_state.dados['rastreio']}")
 
-# --- BOTÃO FINAL ---
-if st.button("CONFIRMAR E ENVIAR TUDO", use_container_width=True):
-    # Montamos o texto final combinando o que foi editado no formulário
-    info_ia = f"Pedido: {campo_pedido} | Detento: {campo_detento} | Unidade: {campo_unidade}"
-    
+# --- ENVIO ---
+if st.button("CONFIRMAR E ENVIAR"):
     payload = {
-        "rastreio": st.session_state.form_dados["rastreio"],
-        "classes": info_ia,
-        "origem": "App_Smart_Form"
+        "rastreio": st.session_state.dados["rastreio"],
+        "classes": f"Comprador: {nome_final} | Tel: {tel_final}",
+        "origem": "OCR_Automacao"
     }
-    
-    try:
-        res = requests.post(URL_GOOGLE, json=payload, timeout=20)
-        if res.status_code in [200, 302]:
-            st.balloons()
-            st.success("Dados enviados para a planilha!")
-            # Limpa o formulário para o próximo
-            st.session_state.form_dados = {"pedido": "", "detento": "", "unidade": "", "rastreio": ""}
-            time.sleep(2)
-            st.rerun()
-    except:
-        st.error("Erro ao enviar. Verifique sua conexão.")
+    res = requests.post(URL_GOOGLE, json=payload)
+    if res.status_code == 200:
+        st.balloons()
+        st.success("Dados enviados!")
+        st.session_state.dados = {"comprador": "", "telefone": "", "rastreio": ""}
+        st.rerun()
