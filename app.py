@@ -1,65 +1,74 @@
 import streamlit as st
 import requests
+from ultralytics import YOLO
 from pyzbar.pyzbar import decode
 from PIL import Image
-import io
 
-# URL do seu Web App no Google Apps Script
-WEBAPP_URL = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
+# Substitua pela sua URL de implantação do Google Script
+URL_GOOGLE = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
 
-st.title("Scanner Logístico Jumbo CDP")
+@st.cache_resource
+def load_model():
+    # Carrega o modelo que contém as classes: N. Pedido, Nome Comprador, etc.
+    return YOLO('best.pt')
 
-# Inicializa variáveis de estado
-if 'dados_folha' not in st.session_state:
-    st.session_state.dados_folha = None
+model = load_model()
 
-# --- PASSO 1: LEITURA DA FOLHA DE PEDIDO ---
+st.title("🚀 Checkout Logístico Jumbo")
+
+# --- ETAPA 1: CAPTURA DA FOLHA (ROBOFLOW) ---
 st.header("1. Documento de Pedido")
-foto_folha = st.camera_input("Tire foto da Folha de Pedido", key="camera_folha")
+foto_folha = st.camera_input("Tire foto da folha", key="cam_folha")
+
+if "labels_ia" not in st.session_state:
+    st.session_state.labels_ia = None
 
 if foto_folha:
-    # Aqui você pode adicionar lógica de OCR se precisar extrair texto da folha
-    # Por enquanto, vamos confirmar que a imagem foi capturada
-    st.session_state.dados_folha = "Capturada"
-    st.success("✅ Folha registrada!")
+    img_folha = Image.open(foto_folha)
+    results = model(img_folha)
+    
+    # Extrai exatamente os nomes que você definiu no Roboflow
+    labels = [model.names[int(box.cls[0])] for box in results[0].boxes]
+    
+    if labels:
+        st.session_state.labels_ia = ", ".join(set(labels))
+        st.success(f"✅ IA identificou: {st.session_state.labels_ia}")
+    else:
+        st.session_state.labels_ia = "Nenhum campo detectado"
+        st.warning("⚠️ A IA não reconheceu as marcações nesta foto.")
 
-# --- PASSO 2: LEITURA DO CÓDIGO DE BARRAS (SÓ APARECE APÓS O PASSO 1) ---
-if st.session_state.dados_folha:
+# --- ETAPA 2: CAPTURA DO CÓDIGO DE BARRAS ---
+if st.session_state.labels_ia:
     st.divider()
     st.header("2. Código de Barras")
-    foto_barcode = st.camera_input("Escaneie o Código de Barras do Pacote", key="camera_barcode")
+    foto_bar = st.camera_input("Escanear código do pacote", key="cam_bar")
 
-    if foto_barcode:
-        img_barcode = Image.open(foto_barcode)
-        resultados = decode(img_barcode)
+    if foto_bar:
+        img_bar = Image.open(foto_bar)
+        deteccoes = decode(img_bar)
         
-        if resultados:
-            codigo_lido = resultados[0].data.decode('utf-8')
-            st.info(f"Conteúdo: {codigo_lido}")
+        if deteccoes:
+            codigo_texto = deteccoes[0].data.decode('utf-8')
+            st.info(f"📦 Código: {codigo_texto}")
             
-            # Botão Final para enviar tudo para a nuvem
-            if st.button("Confirmar e Enviar para Nuvem"):
+            # BOTÃO DE ENVIO - Ajustado para bater com o Google Script
+            if st.button("SALVAR NA PLANILHA"):
                 payload = {
-                    "codigo_barras": codigo_lido,
-                    "status_folha": "OK",
-                    "origem": "Streamlit_App"
+                    "rastreio": codigo_texto,          # Vai para a Coluna B
+                    "classes": st.session_state.labels_ia, # Vai para a Coluna C
+                    "origem": "App_Mobile_Jumbo"       # Vai para a Coluna D
                 }
                 
                 try:
-                    response = requests.post(WEBAPP_URL, json=payload)
-                    if response.status_code == 200:
+                    res = requests.post(URL_GOOGLE, json=payload)
+                    if res.status_code == 200:
                         st.balloons()
-                        st.success("Dados enviados com sucesso!")
-                        # Limpa o estado para o próximo pedido
-                        st.session_state.dados_folha = None
+                        st.success("Dados registrados com sucesso!")
+                        # Limpa para o próximo processo
+                        st.session_state.labels_ia = None
                     else:
-                        st.error("Erro ao enviar.")
+                        st.error(f"Erro no servidor: {res.status_code}")
                 except Exception as e:
-                    st.error(f"Conexão falhou: {e}")
+                    st.error(f"Falha de conexão: {e}")
         else:
-            st.warning("Código de barras não detectado na imagem. Tente novamente.")
-
-# Botão para resetar o processo se necessário
-if st.sidebar.button("Resetar Scanner"):
-    st.session_state.dados_folha = None
-    st.rerun()
+            st.warning("Aguardando leitura do código de barras...")
