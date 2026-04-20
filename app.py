@@ -4,44 +4,49 @@ from ultralytics import YOLO
 from pyzbar.pyzbar import decode
 from PIL import Image
 
-# URL do Google Apps Script
+# 1. CONFIGURAÇÕES
+# Use a sua URL de implantação do Google (sempre a "Nova Versão")
 URL_GOOGLE = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
 
-st.set_page_config(page_title="Scanner Jumbo v2", layout="centered")
+st.set_page_config(page_title="Checkout Jumbo CDP", layout="centered")
 
 @st.cache_resource
 def load_model():
+    # Carrega o modelo com suas classes (N. Pedido, Nome Comprador, etc)
     return YOLO('best.pt')
 
 model = load_model()
 
-# Estado da sessão para garantir a sequência correta
-if "ia_ok" not in st.session_state:
-    st.session_state.ia_ok = None
+# Inicializa o estado para não perder a informação entre as fotos
+if "dados_ia" not in st.session_state:
+    st.session_state.dados_ia = None
 
-st.title("🚀 Sistema de Checkout - Jumbo CDP")
+st.title("🚀 Sistema de Checkout Jumbo")
+st.write("Conferência automática via IA e Rastreio.")
 
 # --- PASSO 1: IA (ROBOFLOW) ---
-st.subheader("1. Folha de Pedido")
-foto_folha = st.camera_input("Capture a folha", key="cam1")
+st.subheader("1. Escanear Folha de Pedido")
+foto_folha = st.camera_input("Tire foto da folha", key="cam1")
 
 if foto_folha:
     img_f = Image.open(foto_folha)
     results = model(img_f)
-    # Extrai as classes: Nome Detento, Unidade Prisional, etc.
+    
+    # Extrai os nomes das classes que você treinou
     labels = [model.names[int(box.cls[0])] for box in results[0].boxes]
     
     if labels:
-        st.session_state.ia_ok = ", ".join(set(labels))
-        st.success(f"✅ Detectado: {st.session_state.ia_ok}")
+        st.session_state.dados_ia = ", ".join(set(labels))
+        st.success(f"✅ IA Detectou: {st.session_state.dados_ia}")
     else:
-        st.warning("IA não detectou campos. Tente focar melhor.")
+        st.session_state.dados_ia = "Nenhum campo detectado"
+        st.warning("⚠️ A IA não reconheceu os campos. Tente focar melhor.")
 
 # --- PASSO 2: CÓDIGO DE BARRAS ---
-if st.session_state.ia_ok:
+if st.session_state.dados_ia:
     st.divider()
-    st.subheader("2. Pacote (Código de Barras)")
-    foto_b = st.camera_input("Escanear rastreio", key="cam2")
+    st.subheader("2. Escanear Código de Barras")
+    foto_b = st.camera_input("Tire foto do código do pacote", key="cam2")
 
     if foto_b:
         img_b = Image.open(foto_b)
@@ -52,30 +57,30 @@ if st.session_state.ia_ok:
             st.info(f"📦 Código: {rastreio_lido}")
             
             # --- ENVIO FINAL ---
-            if st.button("CONFIRMAR ENVIO PARA NUVEM", variant="primary"):
+            # Removido 'variant' para evitar o TypeError do seu print
+            if st.button("CONFIRMAR E ENVIAR PARA NUVEM"):
                 payload = {
-                    "rastreio": rastreio_lido,           # Vai para B
-                    "classes": st.session_state.ia_ok,   # Vai para C
-                    "origem": "App_Streamlit_V2"         # Vai para D
+                    "rastreio": str(rastreio_lido),      # Coluna B
+                    "classes": str(st.session_state.dados_ia), # Coluna C
+                    "origem": "Jumbo_Mobile_Final"       # Coluna D
                 }
                 
                 try:
-                    # Timeout de 10s para não travar o app se a internet da Jumbo oscilar
                     res = requests.post(URL_GOOGLE, json=payload, timeout=10)
                     if res.status_code == 200:
                         st.balloons()
                         st.success("✅ Pedido arquivado com sucesso!")
-                        # Limpa tudo para o próximo operador
-                        st.session_state.ia_ok = None
+                        # Limpa o estado e reinicia para o próximo pedido
+                        st.session_state.dados_ia = None
                         st.rerun()
                     else:
-                        st.error("Erro no servidor do Google.")
+                        st.error(f"Erro no servidor Google: {res.status_code}")
                 except Exception as e:
                     st.error(f"Erro de conexão: {e}")
         else:
             st.warning("Aguardando leitura do código de barras...")
 
-# Barra lateral para emergência
-if st.sidebar.button("Resetar Scanner"):
-    st.session_state.ia_ok = None
+# Barra lateral para resetar se algo der errado
+if st.sidebar.button("Reiniciar Processo"):
+    st.session_state.dados_ia = None
     st.rerun()
