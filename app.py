@@ -3,86 +3,79 @@ import requests
 from ultralytics import YOLO
 from pyzbar.pyzbar import decode
 from PIL import Image
-import io
 
-# 1. CONFIGURAÇÕES E LINKS
-# Certifique-se de que esta URL é a da "Nova Versão" do seu Google Script
+# URL do Google Apps Script
 URL_GOOGLE = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
 
-st.set_page_config(page_title="Checkout Jumbo CDP", layout="centered")
+st.set_page_config(page_title="Scanner Jumbo v2", layout="centered")
 
 @st.cache_resource
 def load_model():
-    # Carrega o seu modelo treinado do Roboflow
     return YOLO('best.pt')
 
 model = load_model()
 
-# Inicializa o estado da sessão para não perder os dados entre as fotos
-if "labels_detectados" not in st.session_state:
-    st.session_state.labels_detectados = None
+# Estado da sessão para garantir a sequência correta
+if "ia_ok" not in st.session_state:
+    st.session_state.ia_ok = None
 
-st.title("🚀 Sistema de Check-out Jumbo")
+st.title("🚀 Sistema de Checkout - Jumbo CDP")
 
-# --- PASSO 1: FOTO DA FOLHA DE PEDIDO ---
-st.header("1. Escanear Folha de Pedido")
-foto_folha = st.camera_input("Tire foto da folha", key="cam_folha")
+# --- PASSO 1: IA (ROBOFLOW) ---
+st.subheader("1. Folha de Pedido")
+foto_folha = st.camera_input("Capture a folha", key="cam1")
 
 if foto_folha:
-    img_folha = Image.open(foto_folha)
-    # Executa a IA do Roboflow
-    results = model(img_folha)
-    
-    # Extrai os nomes das classes (ex: N. Pedido, Nome Comprador, Unidade)
+    img_f = Image.open(foto_folha)
+    results = model(img_f)
+    # Extrai as classes: Nome Detento, Unidade Prisional, etc.
     labels = [model.names[int(box.cls[0])] for box in results[0].boxes]
     
     if labels:
-        st.session_state.labels_detectados = ", ".join(set(labels))
-        st.success(f"✅ Campos Identificados: {st.session_state.labels_detectados}")
+        st.session_state.ia_ok = ", ".join(set(labels))
+        st.success(f"✅ Detectado: {st.session_state.ia_ok}")
     else:
-        st.session_state.labels_detectados = "Nenhum campo detectado"
-        st.warning("⚠️ A IA não reconheceu os campos da folha.")
+        st.warning("IA não detectou campos. Tente focar melhor.")
 
-# --- PASSO 2: CÓDIGO DE BARRAS (SÓ APARECE SE O PASSO 1 FOR FEITO) ---
-if st.session_state.labels_detectados:
+# --- PASSO 2: CÓDIGO DE BARRAS ---
+if st.session_state.ia_ok:
     st.divider()
-    st.header("2. Escanear Código de Barras")
-    foto_barcode = st.camera_input("Tire foto do código de barras", key="cam_barcode")
+    st.subheader("2. Pacote (Código de Barras)")
+    foto_b = st.camera_input("Escanear rastreio", key="cam2")
 
-    if foto_barcode:
-        img_bar = Image.open(foto_barcode)
-        deteccoes = decode(img_bar)
+    if foto_b:
+        img_b = Image.open(foto_b)
+        barcodes = decode(img_b)
         
-        if deteccoes:
-            codigo_lido = deteccoes[0].data.decode('utf-8')
-            st.info(f"📦 Código Detectado: {codigo_lido}")
+        if barcodes:
+            rastreio_lido = barcodes[0].data.decode('utf-8').strip()
+            st.info(f"📦 Código: {rastreio_lido}")
             
-            # --- BOTÃO FINAL DE ENVIO ---
-            if st.button("CONFIRMAR E ENVIAR PARA PLANILHA"):
-                # O segredo para não dar erro na planilha está nestas chaves:
+            # --- ENVIO FINAL ---
+            if st.button("CONFIRMAR ENVIO PARA NUVEM", variant="primary"):
                 payload = {
-                    "rastreio": codigo_lido,                 # Coluna B
-                    "classes": st.session_state.labels_detectados, # Coluna C
-                    "origem": "App_Streamlit_V2"             # Coluna D
+                    "rastreio": rastreio_lido,           # Vai para B
+                    "classes": st.session_state.ia_ok,   # Vai para C
+                    "origem": "App_Streamlit_V2"         # Vai para D
                 }
                 
                 try:
-                    # Envia os dados para a nuvem
-                    response = requests.post(URL_GOOGLE, json=payload)
-                    
-                    if response.status_code == 200:
+                    # Timeout de 10s para não travar o app se a internet da Jumbo oscilar
+                    res = requests.post(URL_GOOGLE, json=payload, timeout=10)
+                    if res.status_code == 200:
                         st.balloons()
-                        st.success("✅ Dados registrados com sucesso na planilha!")
-                        # Limpa os dados para o próximo pedido
-                        st.session_state.labels_detectados = None
+                        st.success("✅ Pedido arquivado com sucesso!")
+                        # Limpa tudo para o próximo operador
+                        st.session_state.ia_ok = None
+                        st.rerun()
                     else:
-                        st.error(f"Erro no servidor Google: {response.status_code}")
+                        st.error("Erro no servidor do Google.")
                 except Exception as e:
-                    st.error(f"Falha na conexão: {e}")
+                    st.error(f"Erro de conexão: {e}")
         else:
             st.warning("Aguardando leitura do código de barras...")
 
-# Rodapé ou Botão de Reset
-if st.sidebar.button("Reiniciar Processo"):
-    st.session_state.labels_detectados = None
+# Barra lateral para emergência
+if st.sidebar.button("Resetar Scanner"):
+    st.session_state.ia_ok = None
     st.rerun()
