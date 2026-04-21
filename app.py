@@ -1,93 +1,84 @@
 import streamlit as st
 import requests
-from ultralytics import YOLO
-from pyzbar.pyzbar import decode
+import base64
+import json
 from PIL import Image
-import easyocr
-import numpy as np
+from pyzbar.pyzbar import decode
 
-# URL DO SEU GOOGLE SCRIPT
-URL_GOOGLE = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
+# 1. PEGA A CHAVE COM SEGURANÇA DOS SECRETS
+if "vision_api_key" in st.secrets:
+    API_KEY = st.secrets["vision_api_key"]
+else:
+    st.error("Configure a 'vision_api_key' nos Secrets do Streamlit!")
+    st.stop()
 
-st.set_page_config(page_title="Jumbo OCR Smart", layout="centered")
+URL_VISION = f"https://vision.googleapis.com/v1/images:annotate?key={API_KEY}"
+URL_GOOGLE_SHEETS = "https://script.google.com/macros/s/AKfycbz1482LFPg1cUWoMiY4tGuyi-csoyaaPiUJwuLz5U-CUQ-0wnDTXBgUilKbWJYs-80G/exec"
 
-@st.cache_resource
-def load_tools():
-    # 1. Carrega a YOLO (Localizador)
-    model = YOLO('best.pt')
-    # 2. Carrega o EasyOCR (Leitor) forçando CPU
-    # Isso evita o erro 'Neither CUDA nor MPS are available'
-    reader = easyocr.Reader(['pt'], gpu=False) 
-    return model, reader
+st.set_page_config(page_title="Checkout Jumbo Vision", layout="centered")
 
-model, reader = load_tools()
+if "temp_texto" not in st.session_state:
+    st.session_state.temp_texto = ""
 
-# --- ESTADO DA SESSÃO ---
-if "dados" not in st.session_state:
-    st.session_state.dados = {"comprador": "", "telefone": "", "rastreio": ""}
+st.title("📦 Jumbo Smart Checkout")
+st.write("Leitura automática de Nome e Telefone via Google Vision")
 
-st.title("📦 Scanner Inteligente Jumbo")
+# --- PASSO 1: FOTO DA FOLHA ---
+st.subheader("1. Foto da Folha de Pedido")
+foto_folha = st.camera_input("Capture a folha", key="cam_folha")
 
-# --- FLUXO DE CAPTURA ---
-foto = st.camera_input("Tire foto da folha de pedido")
-
-if foto:
-    img = Image.open(foto)
-    img_np = np.array(img)
+if foto_folha:
+    img_b64 = base64.b64encode(foto_folha.getvalue()).decode("utf-8")
     
-    # YOLO detecta onde estão os campos
-    with st.spinner('IA localizando campos...'):
-        results = model.predict(img, conf=0.25)
-    
-    # Processa cada caixa detectada
-    for box in results[0].boxes:
-        c = box.xyxy[0].tolist()
-        classe_nome = model.names[int(box.cls[0])].lower()
-        
-        # Margem de segurança (padding) para não cortar as letras
-        pad = 10
-        x1, y1, x2, y2 = int(c[0])-pad, int(c[1])-pad, int(c[2])+pad, int(c[3])+pad
-        crop = img_np[max(0, y1):min(img_np.shape[0], y2), max(0, x1):min(img_np.shape[1], x2)]
-        
-        if crop.size > 0:
-            # OCR lê o texto dentro da caixa
-            with st.spinner(f'Lendo texto em {classe_nome}...'):
-                result_ocr = reader.readtext(crop, detail=0)
-                texto_extraido = " ".join(result_ocr).strip()
-            
-            # Preenche o formulário (Verifique se os nomes das classes no Roboflow batem aqui)
-            if "comprador" in classe_nome:
-                st.session_state.dados["comprador"] = texto_extraido
-            elif "telefone" in classe_nome:
-                st.session_state.dados["telefone"] = texto_extraido
-
-# --- FORMULÁRIO DE CONFERÊNCIA ---
-st.divider()
-nome_val = st.text_input("Nome do Comprador extraído:", value=st.session_state.dados["comprador"])
-tel_val = st.text_input("Telefone extraído:", value=st.session_state.dados["telefone"])
-
-# --- RASTREIO ---
-foto_bar = st.camera_input("Escanear Rastreio", key="barcode")
-if foto_bar:
-    img_b = Image.open(foto_bar)
-    d = decode(img_b)
-    if d:
-        st.session_state.dados["rastreio"] = d[0].data.decode('utf-8')
-        st.success(f"Rastreio: {st.session_state.dados['rastreio']}")
-
-# --- ENVIO FINAL ---
-if st.button("ENVIAR PARA PLANILHA", use_container_width=True):
     payload = {
-        "rastreio": st.session_state.dados["rastreio"],
-        "classes": f"Comprador: {nome_val} | Tel: {tel_val}",
-        "origem": "EasyOCR_Producao"
+        "requests": [{
+            "image": {"content": img_b64},
+            "features": [{"type": "TEXT_DETECTION"}]
+        }]
     }
-    try:
-        res = requests.post(URL_GOOGLE, json=payload, timeout=20)
-        st.balloons()
-        st.success("Dados enviados com sucesso!")
-        # Limpa para o próximo
-        st.session_state.dados = {"comprador": "", "telefone": "", "rastreio": ""}
-        st.rerun()
-    except:
-        st.error("Erro ao enviar.")
+
+    with st.spinner('IA lendo dados...'):
+        response = requests.post(URL_VISION, json=payload)
+        res_json = response.json()
+        
+        try:
+            # Extrai todo o bloco de texto lido
+            st.session_state.temp_texto = res_json['responses'][0]['textAnnotations'][0]['description']
+            st.success("Dados lidos com sucesso!")
+        except:
+            st.error("Erro na leitura. Verifique se a API Vision está ATIVA no seu console Google.")
+
+# --- PASSO 2: CONFERÊNCIA ---
+if st.session_state.temp_texto:
+    st.divider()
+    st.subheader("2. Conferência de Dados")
+    # O texto lido aparece aqui para você conferir ou editar
+    texto_final = st.text_area("Dados extraídos:", value=st.session_state.temp_texto, height=200)
+
+    # --- PASSO 3: RASTREIO ---
+    st.subheader("3. Código de Rastreio")
+    foto_bar = st.camera_input("Escanear o pacote", key="cam_bar")
+    
+    if foto_bar:
+        img_b = Image.open(foto_bar)
+        barcodes = decode(img_b)
+        
+        if barcodes:
+            rastreio = barcodes[0].data.decode('utf-8').strip()
+            st.info(f"📦 Rastreio: {rastreio}")
+            
+            if st.button("CONFIRMAR E ENVIAR PARA PLANILHA", use_container_width=True):
+                dados_envio = {
+                    "rastreio": str(rastreio),
+                    "classes": texto_final,
+                    "origem": "Vision_API_Key_Victor"
+                }
+                
+                try:
+                    requests.post(URL_GOOGLE_SHEETS, json=dados_envio, timeout=20)
+                    st.balloons()
+                    st.success("✅ Enviado para a nuvem!")
+                    st.session_state.temp_texto = ""
+                    st.rerun()
+                except:
+                    st.error("Erro ao falar com a planilha.")
