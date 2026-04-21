@@ -2,10 +2,10 @@ import streamlit as st
 import requests
 import base64
 import io
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 
 # Configuração da Página
-st.set_page_config(page_title="Jumbo Vision - Teste de Alta Resolução", layout="centered")
+st.set_page_config(page_title="Jumbo Vision - Mobile Fix", layout="centered")
 
 # Busca a chave nos Secrets
 if "vision_api_key" in st.secrets:
@@ -16,27 +16,30 @@ else:
 
 URL_VISION = f"https://vision.googleapis.com/v1/images:annotate?key={API_KEY}"
 
-st.title("🧪 Laboratório OCR Jumbo")
-st.write("Versão de Alta Qualidade para Captura de Nomes e Telefones")
+st.title("🧪 Teste de Câmera Jumbo")
+st.write("Se a câmera não abrir, verifique as permissões do navegador.")
 
-# PASSO 1: CAPTURA (Usando File Uploader para garantir nitidez)
-st.subheader("1. Capturar Imagem")
-# No iPhone, este botão permite "Tirar Foto" com a câmara oficial
-foto_bruta = st.file_uploader("Clique para tirar foto ou carregar imagem", type=['jpg', 'jpeg', 'png'])
+# PASSO 1: CAPTURA
+# O camera_input é o que melhor funciona para "abrir a câmera" direto no Streamlit
+foto_bruta = st.camera_input("Tire a foto da folha")
 
 if foto_bruta:
-    with st.spinner('A otimizar imagem e a ler dados...'):
+    with st.spinner('Processando imagem em alta qualidade...'):
         try:
-            # --- TRATAMENTO DA IMAGEM PARA MELHORAR O OCR ---
+            # 1. Abre a imagem
             img = Image.open(foto_bruta)
             
-            # 1. Ajuste de Contraste (ajuda a separar o texto do fundo)
-            enhancer = ImageEnhance.Contrast(img)
-            img_editada = enhancer.enhance(1.8)
+            # 2. Corrige a orientação (iPhone costuma girar a foto)
+            img = ImageOps.exif_transpose(img)
             
-            # 2. Converte para Bytes em Alta Qualidade (JPEG 100)
+            # 3. TRATAMENTO PARA OCR:
+            # Aumentamos o contraste e a nitidez para compensar os "poucos pixels"
+            img = ImageEnhance.Contrast(img).enhance(2.0)
+            img = ImageEnhance.Sharpness(img).enhance(2.0)
+            
+            # 4. Converte para Bytes sem compressão agressiva
             buffer = io.BytesIO()
-            img_editada.save(buffer, format="JPEG", quality=100)
+            img.save(buffer, format="JPEG", quality=100)
             img_bytes = buffer.getvalue()
             
             # --- ENVIO PARA O GOOGLE VISION ---
@@ -52,29 +55,13 @@ if foto_bruta:
             response = requests.post(URL_VISION, json=payload)
             res_json = response.json()
 
-            # --- EXTRAÇÃO E EXIBIÇÃO ---
-            if 'responses' in res_json and res_json['responses'][0]:
+            if 'responses' in res_json and res_json[0]:
                 texto_lido = res_json['responses'][0]['textAnnotations'][0]['description']
-                
-                st.success("✅ Leitura realizada com sucesso!")
-                
-                # Preview da imagem que foi enviada (para veres se está nítida)
-                st.image(img_editada, caption="Imagem processada pela IA", use_container_width=True)
-                
-                st.subheader("Dados Identificados:")
-                resultado = st.text_area("Podes editar o texto abaixo se necessário:", 
-                                       value=texto_lido, 
-                                       height=300)
-                
-                if st.button("Tudo correto? Confirmar Teste"):
-                    st.balloons()
-                    st.info("Teste validado. Agora podemos levar este fluxo para o app oficial.")
+                st.success("✅ Leitura realizada!")
+                st.image(img, caption="Imagem processada (Contraste + Nitidez)", use_container_width=True)
+                st.text_area("Texto extraído:", value=texto_lido, height=300)
             else:
-                st.error("O Google não conseguiu detetar texto. Tenta focar melhor no papel.")
-                
-        except Exception as e:
-            st.error(f"Erro no processamento: {e}")
-            st.write("Detalhes do erro do Google:", res_json)
+                st.warning("IA não detectou texto. Tente focar melhor ou limpar a lente.")
 
-st.divider()
-st.caption("Dica: Se a imagem estiver 'lavada', o contraste automático (1.8x) ajudará o Google a ler o telefone corretamente.")
+        except Exception as e:
+            st.error(f"Erro: {e}")
